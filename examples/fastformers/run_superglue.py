@@ -650,8 +650,15 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     preds = None
     out_label_ids = None
     ex_ids = None
-    eval_dataloader = tqdm(eval_dataloader, desc="Evaluating") if use_tqdm else eval_dataloader
-    for batch in eval_dataloader:
+    # eval_dataloader = tqdm(eval_dataloader, desc="Evaluating") if use_tqdm else eval_dataloader
+    args.num_iter = min(args.num_iter+args.num_warmup, len(eval_dataloader))
+
+    total_time = 0.0
+    total_sample = 0
+
+    for i, batch in enumerate(eval_dataloader):
+        if i == args.num_iter:
+            break
         model.eval()
         batch = tuple(t.to(args.device) for t in batch)
         guids = batch[-1]
@@ -683,10 +690,19 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                 )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
 
         with torch.no_grad():
+            tic = time.time()
             outputs = model(**inputs)
+            toc = time.time()
             tmp_eval_loss, logits = outputs[:2]
 
             eval_loss += tmp_eval_loss.mean().item()
+        # OOB
+        elapsed = toc - tic
+        if i >= args.num_warmup:
+            total_sample += args.per_instance_eval_batch_size
+            total_time += elapsed
+            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+
         nb_eval_steps += 1
         if preds is None:
             preds = logits.detach().cpu().numpy()
@@ -696,6 +712,13 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
             preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
             out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
             ex_ids.append(guids.detach().cpu().numpy())
+    # OOB
+    latency = total_time / total_sample * 1000
+    throughput = total_sample / total_time
+    print("inference Latency: {:.3f} ms".format(latency))
+    print("inference Throughput: {:.2f} samples/s".format(throughput))
+    print("batch_size: ", args.per_instance_eval_batch_size)
+    print("device: ", args.device)
 
     ex_ids = np.concatenate(ex_ids, axis=0)
     eval_loss = eval_loss / nb_eval_steps
@@ -1628,6 +1651,15 @@ def main():
     parser.add_argument("--skip_quantization", action="store_true", help="Whether to skip 8-bit quantization.")
     parser.add_argument("--use_fixed_seq_length", action="store_true", help="Whether to use fixed sequence length.")
     parser.add_argument("--nodes_to_exclude", nargs='*', default=[], help="Nodes to be excluded from quantization")
+
+    # OOB
+    parser.add_argument('--precision', default="float32", type=str, help='precision')
+    parser.add_argument('--channels_last', default=1, type=int, help='Use NHWC or not')
+    parser.add_argument('--jit', action='store_true', default=False, help='enable JIT')
+    parser.add_argument('--profile', action='store_true', default=False, help='collect timeline')
+    parser.add_argument('--num_iter', default=200, type=int, help='test iterations')
+    parser.add_argument('--num_warmup', default=20, type=int, help='test warmup')
+    parser.add_argument('--device', default='cpu', type=str, help='cpu, cuda or xpu')
     args = parser.parse_args()
 
     # Setup logging
@@ -1687,7 +1719,6 @@ def main():
         device = torch.device("cuda", args.local_rank)
         torch.distributed.init_process_group(backend="nccl")
         args.n_gpu = 1
-    args.device = device
     logger.warning(
         "Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
         args.local_rank,
