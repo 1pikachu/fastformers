@@ -14,4 +14,8 @@ python3 examples/fastformers/run_superglue.py \
         --task_name BoolQ --output_dir ${out_dir} --do_eval \
         --data_dir ${data_dir} --per_instance_eval_batch_size 1 \
         --do_lower_case --max_seq_length 512 \
-        --threads_per_instance 1 --no_cuda
+        --threads_per_instance 1 --no_cuda --device cuda \
+	--precision float16 \
+	--num_iter 200 --num_warmup 20
+
+# use jit will be slow,disable --jit --nv_fuser

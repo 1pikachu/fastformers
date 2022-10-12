@@ -650,6 +650,26 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     preds = None
     out_label_ids = None
     ex_ids = None
+
+    model.eval()
+    # OOB
+    ## device
+    model = model.to(args.device)
+    ## precision
+    if args.device == "xpu" and args.precision == "float16":
+        model = model.half()
+        print("---- float16 to.half()")
+    ## channels_last
+    if args.channels_last:
+        model = model.to(memory_format=torch.channels_last)
+        print("---- use NHWC format")
+    ## nv fuser
+    if args.nv_fuser:
+        fuser_mode = "fuser2"
+    else:
+        fuser_mode = "none"
+    print("---- fuser mode:", fuser_mode)
+
     # eval_dataloader = tqdm(eval_dataloader, desc="Evaluating") if use_tqdm else eval_dataloader
     args.num_iter = min(args.num_iter+args.num_warmup, len(eval_dataloader))
 
@@ -659,8 +679,16 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     for i, batch in enumerate(eval_dataloader):
         if i == args.num_iter:
             break
-        model.eval()
-        batch = tuple(t.to(args.device) for t in batch)
+        batch = [t.to(args.device) for t in batch]
+        # OOB
+        ## precision
+        if args.device == "xpu" and args.precision == "float16":
+            batch = [t.half() for t in batch]
+        ## channels_last
+        if args.channels_last:
+            batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
+
+        batch = tuple(batch)
         guids = batch[-1]
 
         max_seq_length = batch[0].size(1)
@@ -689,6 +717,14 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                     batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
                 )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
 
+        if i == 0 and args.jit:
+            try:
+                model = torch.jit.trace(model, tuple(inputs.values()), check_trace=False)
+                print("---- With JIT enabled.")
+            except (RuntimeError, TypeError) as e:
+                print("---- With JIT disabled.")
+                print("failed to use PyTorch jit mode due to: ", e)
+
         with torch.no_grad():
             tic = time.time()
             outputs = model(**inputs)
@@ -701,7 +737,7 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
         if i >= args.num_warmup:
             total_sample += args.per_instance_eval_batch_size
             total_time += elapsed
-            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+        print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
 
         nb_eval_steps += 1
         if preds is None:
@@ -713,8 +749,13 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
             out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
             ex_ids.append(guids.detach().cpu().numpy())
     # OOB
-    latency = total_time / total_sample * 1000
-    throughput = total_sample / total_time
+    if args.num_iter <= args.num_warmup:
+        latency = 0
+        throughput = 0
+        print("length of datasets can`t support the num of iter")
+    else:
+        latency = total_time / total_sample * 1000
+        throughput = total_sample / total_time
     print("inference Latency: {:.3f} ms".format(latency))
     print("inference Throughput: {:.2f} samples/s".format(throughput))
     print("batch_size: ", args.per_instance_eval_batch_size)
@@ -1656,6 +1697,7 @@ def main():
     parser.add_argument('--precision', default="float32", type=str, help='precision')
     parser.add_argument('--channels_last', default=1, type=int, help='Use NHWC or not')
     parser.add_argument('--jit', action='store_true', default=False, help='enable JIT')
+    parser.add_argument('--nv_fuser', action='store_true', default=False, help='enable nv fuser')
     parser.add_argument('--profile', action='store_true', default=False, help='collect timeline')
     parser.add_argument('--num_iter', default=200, type=int, help='test iterations')
     parser.add_argument('--num_warmup', default=20, type=int, help='test warmup')
@@ -1707,22 +1749,28 @@ def main():
         ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
         ptvsd.wait_for_attach()
 
+    # OOB
+    if args.device == "cuda":
+        args.n_gpu = 1
+    else:
+        args.n_gpu = 0
+
     # Setup CUDA, GPU & distributed training
-    if args.use_gpuid > -1:
-        device = args.use_gpuid
-        args.n_gpu = 1
-    elif args.local_rank == -1 or args.no_cuda:
-        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-        args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
-    else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
-        torch.distributed.init_process_group(backend="nccl")
-        args.n_gpu = 1
+    #if args.use_gpuid > -1:
+    #    device = args.use_gpuid
+    #    args.n_gpu = 1
+    #elif args.local_rank == -1 or args.no_cuda:
+    #    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    #    args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
+    #else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+    #    torch.cuda.set_device(args.local_rank)
+    #    device = torch.device("cuda", args.local_rank)
+    #    torch.distributed.init_process_group(backend="nccl")
+    #    args.n_gpu = 1
     logger.warning(
         "Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
         args.local_rank,
-        device,
+        args.device,
         args.n_gpu,
         bool(args.local_rank != -1),
         args.fp16,
@@ -1924,7 +1972,16 @@ def main():
         # normal evaluation (pytorch)
         else:
             if not args.skip_evaluate_dev:
-                result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                if args.precision == "float16" and args.device == "cuda":
+                    print("---- float16 autocast")
+                    with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+                        result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                elif args.precision == "bfloat16":
+                    print("---- bfloat16 autocast")
+                    with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                        result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                else:
+                    result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
                 result = dict((f"{k}", v) for k, v in result.items())
 
             if args.evaluate_test:
