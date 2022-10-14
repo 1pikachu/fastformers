@@ -655,10 +655,6 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     # OOB
     ## device
     model = model.to(args.device)
-    ## precision
-    if args.device == "xpu" and args.precision == "float16":
-        model = model.half()
-        print("---- float16 to.half()")
     ## channels_last
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
@@ -727,7 +723,15 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
 
         with torch.no_grad():
             tic = time.time()
-            outputs = model(**inputs)
+            if args.device == "cuda":
+                with torch.jit.fuser(fuser_mode):
+                    outputs = model(**inputs)
+            else:
+                outputs = model(**inputs)
+            if args.device == "xpu":
+                torch.xpu.synchronize()
+            elif args.device == "cuda":
+                torch.cuda.synchronize()
             toc = time.time()
             tmp_eval_loss, logits = outputs[:2]
 
@@ -1973,14 +1977,23 @@ def main():
         else:
             if not args.skip_evaluate_dev:
                 if args.precision == "float16" and args.device == "cuda":
-                    print("---- float16 autocast")
+                    print("---- float16 cuda autocast")
                     with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
                         result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                elif args.precision == "bfloat16":
-                    print("---- bfloat16 autocast")
+                elif args.precision == "float16" and args.device == "xpu":
+                    print("---- float16 xpu autocast")
+                    with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16):
+                        result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                elif args.precision == "bfloat16" and args.device == "cpu":
+                    print("---- bfloat16 cpu autocast")
                     with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
                         result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                elif args.precision == "bfloat16" and args.device == "xpu":
+                    print("---- bfloat16 xpu autocast")
+                    with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                        result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
                 else:
+                    print("---- no autocast")
                     result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
                 result = dict((f"{k}", v) for k, v in result.items())
 
