@@ -1708,6 +1708,11 @@ def main():
     parser.add_argument('--device', default='cpu', type=str, help='cpu, cuda or xpu')
     args = parser.parse_args()
 
+    if args.device == "xpu":
+        import intel_extension_for_pytorch
+    elif args.device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = False
+
     # Setup logging
     logging.basicConfig(
         # format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
