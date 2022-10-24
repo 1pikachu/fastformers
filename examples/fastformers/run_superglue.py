@@ -677,9 +677,6 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
             break
         batch = [t.to(args.device) for t in batch]
         # OOB
-        ## precision
-        if args.device == "xpu" and args.precision == "float16":
-            batch = [t.half() for t in batch]
         ## channels_last
         if args.channels_last:
             batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]

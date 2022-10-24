@@ -2,7 +2,7 @@ pip install onnxruntime==1.8.0 setuptools_rust
 pip uninstall transformers -y
 python setup.py install
 
-
+cp -r /home2/pytorch-broad-models/fastformers/SuperGLUE .
 ln -s /home2/pytorch-broad-models/fastformers/student-4L-312 student-4L-312
 
 pruned_student_model=student-4L-312
