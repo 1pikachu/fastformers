@@ -129,7 +129,7 @@ setup(
         # for superglue
         "sklearn",
         "experiment_impact_tracker",
-        "torch",
+        #"torch",
         # for superglue - impact tracker
         "ratelim",
     ],
