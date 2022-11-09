@@ -686,10 +686,11 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     total_time = 0.0
     total_sample = 0
 
+    fix_batch = iter(eval_dataloader).next()
+
     if args.profile and args.device == "xpu":
-        for i, batch in enumerate(eval_dataloader):
-            if i == args.num_iter:
-                break
+        for i in range(args.num_iter + args.num_warmup):
+            batch = fix_batch
             batch = [t.to(args.device) for t in batch]
             # OOB
             ## channels_last
@@ -782,9 +783,8 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
             ),
             on_trace_ready=trace_handler,
         ) as p:
-            for i, batch in enumerate(eval_dataloader):
-                if i == args.num_iter:
-                    break
+            for i in range(args.num_iter + args.num_warmup):
+                batch = fix_batch
                 batch = [t.to(args.device) for t in batch]
                 # OOB
                 ## channels_last
@@ -865,9 +865,8 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
             ),
             on_trace_ready=trace_handler,
         ) as p:
-            for i, batch in enumerate(eval_dataloader):
-                if i == args.num_iter:
-                    break
+            for i in range(args.num_iter + args.num_warmup):
+                batch = fix_batch
                 batch = [t.to(args.device) for t in batch]
                 # OOB
                 ## channels_last
@@ -936,9 +935,8 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                     out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
                     ex_ids.append(guids.detach().cpu().numpy())
     elif not args.profile and args.device == "cuda":
-        for i, batch in enumerate(eval_dataloader):
-            if i == args.num_iter:
-                break
+        for i in range(args.num_iter + args.num_warmup):
+            batch = fix_batch
             batch = [t.to(args.device) for t in batch]
             # OOB
             ## channels_last
@@ -1008,9 +1006,8 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                 out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
                 ex_ids.append(guids.detach().cpu().numpy())
     else:
-        for i, batch in enumerate(eval_dataloader):
-            if i == args.num_iter:
-                break
+        for i in range(args.num_iter + args.num_warmup):
+            batch = fix_batch
             batch = [t.to(args.device) for t in batch]
             # OOB
             ## channels_last
