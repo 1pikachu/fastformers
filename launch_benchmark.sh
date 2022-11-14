@@ -11,8 +11,7 @@ function main {
     # requirements
     pip install onnxruntime==1.8.0 setuptools_rust
     pip uninstall transformers -y
-    pip install transformers
-    #python setup.py develop
+    python setup.py develop || true
 
     cp -r ${DATASET_DIR} .
     ln -s ${CKPT_DIR} student-4L-312 
