@@ -10,8 +10,8 @@ function main {
 
     # requirements
     pip install onnxruntime==1.8.0 setuptools_rust
+    pip uninstall transformers -y
     pip install transformers
-    #pip uninstall transformers -y
     #python setup.py develop
 
     cp -r ${DATASET_DIR} .
