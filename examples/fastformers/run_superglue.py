@@ -642,8 +642,8 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
         os.makedirs(args.output_dir)
 
-    if args.fp16:
-        model.half()
+    #if args.fp16:
+    #    model.half()
 
     args.eval_batch_size = args.per_instance_eval_batch_size * max(1, args.n_gpu)
     # Note that DistributedSampler samples randomly
@@ -733,15 +733,14 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                     print("---- With JIT disabled.")
                     print("failed to use PyTorch jit mode due to: ", e)
 
-            with torch.no_grad():
-                tic = time.time()
-                with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
-                    outputs = model(**inputs)
-                torch.xpu.synchronize()
-                toc = time.time()
-                tmp_eval_loss, logits = outputs[:2]
+            tic = time.time()
+            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
+                outputs = model(**inputs)
+            torch.xpu.synchronize()
+            toc = time.time()
+            tmp_eval_loss, logits = outputs[:2]
 
-                eval_loss += tmp_eval_loss.mean().item()
+            eval_loss += tmp_eval_loss.mean().item()
             # OOB
             elapsed = toc - tic
             if i >= args.num_warmup:
@@ -828,16 +827,15 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                         print("---- With JIT disabled.")
                         print("failed to use PyTorch jit mode due to: ", e)
 
-                with torch.no_grad():
-                    tic = time.time()
-                    with torch.jit.fuser(fuser_mode):
-                        outputs = model(**inputs)
-                    torch.cuda.synchronize()
-                    toc = time.time()
-                    p.step()
-                    tmp_eval_loss, logits = outputs[:2]
+                tic = time.time()
+                with torch.jit.fuser(fuser_mode):
+                    outputs = model(**inputs)
+                torch.cuda.synchronize()
+                toc = time.time()
+                p.step()
+                tmp_eval_loss, logits = outputs[:2]
 
-                    eval_loss += tmp_eval_loss.mean().item()
+                eval_loss += tmp_eval_loss.mean().item()
                 # OOB
                 elapsed = toc - tic
                 if i >= args.num_warmup:
@@ -911,14 +909,13 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                         print("---- With JIT disabled.")
                         print("failed to use PyTorch jit mode due to: ", e)
 
-                with torch.no_grad():
-                    tic = time.time()
-                    outputs = model(**inputs)
-                    toc = time.time()
-                    p.step()
-                    tmp_eval_loss, logits = outputs[:2]
+                tic = time.time()
+                outputs = model(**inputs)
+                toc = time.time()
+                p.step()
+                tmp_eval_loss, logits = outputs[:2]
 
-                    eval_loss += tmp_eval_loss.mean().item()
+                eval_loss += tmp_eval_loss.mean().item()
                 # OOB
                 elapsed = toc - tic
                 if i >= args.num_warmup:
@@ -982,15 +979,14 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                     print("---- With JIT disabled.")
                     print("failed to use PyTorch jit mode due to: ", e)
 
-            with torch.no_grad():
-                tic = time.time()
-                with torch.jit.fuser(fuser_mode):
-                    outputs = model(**inputs)
-                torch.cuda.synchronize()
-                toc = time.time()
-                tmp_eval_loss, logits = outputs[:2]
+            tic = time.time()
+            with torch.jit.fuser(fuser_mode):
+                outputs = model(**inputs)
+            torch.cuda.synchronize()
+            toc = time.time()
+            tmp_eval_loss, logits = outputs[:2]
 
-                eval_loss += tmp_eval_loss.mean().item()
+            eval_loss += tmp_eval_loss.mean().item()
             # OOB
             elapsed = toc - tic
             if i >= args.num_warmup:
@@ -1054,15 +1050,14 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                     print("---- With JIT disabled.")
                     print("failed to use PyTorch jit mode due to: ", e)
 
-            with torch.no_grad():
-                tic = time.time()
-                outputs = model(**inputs)
-                if args.device == "xpu":
-                    torch.xpu.synchronize()
-                toc = time.time()
-                tmp_eval_loss, logits = outputs[:2]
+            tic = time.time()
+            outputs = model(**inputs)
+            if args.device == "xpu":
+                torch.xpu.synchronize()
+            toc = time.time()
+            tmp_eval_loss, logits = outputs[:2]
 
-                eval_loss += tmp_eval_loss.mean().item()
+            eval_loss += tmp_eval_loss.mean().item()
             # OOB
             elapsed = toc - tic
             if i >= args.num_warmup:
@@ -2308,25 +2303,28 @@ def main():
         # normal evaluation (pytorch)
         else:
             if not args.skip_evaluate_dev:
-                if args.precision == "float16" and args.device == "cuda":
-                    print("---- float16 cuda autocast")
-                    with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+                datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
+                model = torch.xpu.optimize(model=model, dtype=datatype)
+                with torch.no_grad():
+                    if args.precision == "float16" and args.device == "cuda":
+                        print("---- float16 cuda autocast")
+                        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+                            result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                    elif args.precision == "float16" and args.device == "xpu":
+                        print("---- float16 xpu autocast")
+                        with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16):
+                            result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                    elif args.precision == "bfloat16" and args.device == "cpu":
+                        print("---- bfloat16 cpu autocast")
+                        with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                            result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                    elif args.precision == "bfloat16" and args.device == "xpu":
+                        print("---- bfloat16 xpu autocast")
+                        with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                            result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
+                    else:
+                        print("---- no autocast")
                         result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                elif args.precision == "float16" and args.device == "xpu":
-                    print("---- float16 xpu autocast")
-                    with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16):
-                        result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                elif args.precision == "bfloat16" and args.device == "cpu":
-                    print("---- bfloat16 cpu autocast")
-                    with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
-                        result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                elif args.precision == "bfloat16" and args.device == "xpu":
-                    print("---- bfloat16 xpu autocast")
-                    with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
-                        result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                else:
-                    print("---- no autocast")
-                    result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
                 result = dict((f"{k}", v) for k, v in result.items())
 
             if args.evaluate_test:
