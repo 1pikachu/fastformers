@@ -2303,8 +2303,9 @@ def main():
         # normal evaluation (pytorch)
         else:
             if not args.skip_evaluate_dev:
-                datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
-                model = torch.xpu.optimize(model=model, dtype=datatype)
+                if args.device == "xpu":
+                    datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
+                    model = torch.xpu.optimize(model=model, dtype=datatype)
                 with torch.no_grad():
                     if args.precision == "float16" and args.device == "cuda":
                         print("---- float16 cuda autocast")
