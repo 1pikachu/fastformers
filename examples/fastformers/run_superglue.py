@@ -760,6 +760,9 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                     timeline_dir+'profile.pt')
                 torch.save(prof.key_averages(group_by_input_shape=True).table(),
                     timeline_dir+'profile_detail.pt')
+                torch.save(prof.table(sort_by="id", row_limit=100000),
+                    timeline_dir+'profile_detail_withId.pt')
+                prof.export_chrome_trace(timeline_dir+"trace.json")
 
             nb_eval_steps += 1
             if preds is None:
