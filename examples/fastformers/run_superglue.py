@@ -686,6 +686,62 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     total_time = 0.0
     total_sample = 0
 
+    def process_batch(args, batch, index, model):
+        max_seq_length = batch[0].size(1)
+        if args.use_fixed_seq_length: # no dynamic sequence length
+            batch_seq_length = max_seq_length
+        else:
+            batch_seq_length = torch.max(batch[-2], 0)[0].item()
+
+        if batch_seq_length < max_seq_length:
+            inputs = {"input_ids": batch[0][:,:batch_seq_length].contiguous(),
+                      "attention_mask": batch[1][:,:batch_seq_length].contiguous(),
+                      "labels": batch[3]}
+            if args.output_mode == "span_classification":
+                inputs["spans"] = batch[4]
+            if args.model_type != "distilbert":
+                inputs["token_type_ids"] = (
+                    batch[2][:,:batch_seq_length].contiguous() if args.model_type 
+                        in ["bert", "xlnet", "albert"] else None
+                )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
+        else:
+            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
+            if args.output_mode == "span_classification":
+                inputs["spans"] = batch[4]
+            if args.model_type != "distilbert":
+                inputs["token_type_ids"] = (
+                    batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
+                )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
+        if index == 0 and args.jit:
+            try:
+                model = torch.jit.trace(model, tuple(inputs.values()), check_trace=False)
+                print("---- With JIT enabled.")
+            except (RuntimeError, TypeError) as e:
+                print("---- With JIT disabled.")
+                print("failed to use PyTorch jit mode due to: ", e)
+
+        print("--------input shape---------")
+        for inp in inputs:
+            print("label:{}, shape:{}".format(inp, inputs[inp].shape))
+        return inputs, model
+
+    # warmup
+    if args.warmup_for_dynamicShape:
+        for i, batch in enumerate(eval_dataloader):
+            if i == args.num_iter:
+                break
+            batch = [t.to(args.device) for t in batch]
+            # OOB
+            batch = tuple(batch)
+            guids = batch[-1]
+
+            inputs, model = process_batch(args, batch, i, model)
+            outputs = model(**inputs)
+            if args.device == "cuda":
+                torch.cuda.synchronize()
+            elif args.device == "xpu":
+                torch.xpu.synchronize()
+
     if args.profile and args.device == "xpu":
         for i, batch in enumerate(eval_dataloader):
             if i == args.num_iter:
@@ -699,39 +755,7 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
             batch = tuple(batch)
             guids = batch[-1]
 
-            max_seq_length = batch[0].size(1)
-            if args.use_fixed_seq_length: # no dynamic sequence length
-                batch_seq_length = max_seq_length
-            else:
-                batch_seq_length = torch.max(batch[-2], 0)[0].item()
-
-            if batch_seq_length < max_seq_length:
-                inputs = {"input_ids": batch[0][:,:batch_seq_length].contiguous(),
-                          "attention_mask": batch[1][:,:batch_seq_length].contiguous(),
-                          "labels": batch[3]}
-                if args.output_mode == "span_classification":
-                    inputs["spans"] = batch[4]
-                if args.model_type != "distilbert":
-                    inputs["token_type_ids"] = (
-                        batch[2][:,:batch_seq_length].contiguous() if args.model_type 
-                            in ["bert", "xlnet", "albert"] else None
-                    )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-            else:
-                inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
-                if args.output_mode == "span_classification":
-                    inputs["spans"] = batch[4]
-                if args.model_type != "distilbert":
-                    inputs["token_type_ids"] = (
-                        batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
-                    )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-
-            if i == 0 and args.jit:
-                try:
-                    model = torch.jit.trace(model, tuple(inputs.values()), check_trace=False)
-                    print("---- With JIT enabled.")
-                except (RuntimeError, TypeError) as e:
-                    print("---- With JIT disabled.")
-                    print("failed to use PyTorch jit mode due to: ", e)
+            inputs, model = process_batch(args, batch, i, model)
 
             tic = time.time()
             with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
@@ -773,9 +797,14 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
                 ex_ids.append(guids.detach().cpu().numpy())
-    elif args.profile and args.device == "cuda":
+    elif args.profile:
+        if args.device == "cpu":
+            profile_act = [torch.profiler.ProfilerActivity.CPU]
+        elif args.device == "cuda":
+            profile_act = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+
         with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            activities=profile_act,
             record_shapes=True,
             schedule=torch.profiler.schedule(
                 wait=profile_len,
@@ -796,44 +825,13 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                 batch = tuple(batch)
                 guids = batch[-1]
 
-                max_seq_length = batch[0].size(1)
-                if args.use_fixed_seq_length: # no dynamic sequence length
-                    batch_seq_length = max_seq_length
-                else:
-                    batch_seq_length = torch.max(batch[-2], 0)[0].item()
-
-                if batch_seq_length < max_seq_length:
-                    inputs = {"input_ids": batch[0][:,:batch_seq_length].contiguous(),
-                              "attention_mask": batch[1][:,:batch_seq_length].contiguous(),
-                              "labels": batch[3]}
-                    if args.output_mode == "span_classification":
-                        inputs["spans"] = batch[4]
-                    if args.model_type != "distilbert":
-                        inputs["token_type_ids"] = (
-                            batch[2][:,:batch_seq_length].contiguous() if args.model_type 
-                                in ["bert", "xlnet", "albert"] else None
-                        )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-                else:
-                    inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
-                    if args.output_mode == "span_classification":
-                        inputs["spans"] = batch[4]
-                    if args.model_type != "distilbert":
-                        inputs["token_type_ids"] = (
-                            batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
-                        )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-
-                if i == 0 and args.jit:
-                    try:
-                        model = torch.jit.trace(model, tuple(inputs.values()), check_trace=False)
-                        print("---- With JIT enabled.")
-                    except (RuntimeError, TypeError) as e:
-                        print("---- With JIT disabled.")
-                        print("failed to use PyTorch jit mode due to: ", e)
+                inputs, model = process_batch(args, batch, i, model)
 
                 tic = time.time()
                 with torch.jit.fuser(fuser_mode):
                     outputs = model(**inputs)
-                torch.cuda.synchronize()
+                if args.device == "cuda":
+                    torch.cuda.synchronize()
                 toc = time.time()
                 p.step()
                 tmp_eval_loss, logits = outputs[:2]
@@ -855,207 +853,35 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                     preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                     out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
                     ex_ids.append(guids.detach().cpu().numpy())
-    elif args.profile and args.device == "cpu":
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU],
-            record_shapes=True,
-            schedule=torch.profiler.schedule(
-                wait=profile_len,
-                warmup=2,
-                active=1,
-            ),
-            on_trace_ready=trace_handler,
-        ) as p:
-            for i, batch in enumerate(eval_dataloader):
-                if i == args.num_iter:
-                    break
-                batch = [t.to(args.device) for t in batch]
-                # OOB
-                ## channels_last
-                if args.channels_last:
-                    batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
-
-                batch = tuple(batch)
-                guids = batch[-1]
-
-                max_seq_length = batch[0].size(1)
-                if args.use_fixed_seq_length: # no dynamic sequence length
-                    batch_seq_length = max_seq_length
-                else:
-                    batch_seq_length = torch.max(batch[-2], 0)[0].item()
-
-                if batch_seq_length < max_seq_length:
-                    inputs = {"input_ids": batch[0][:,:batch_seq_length].contiguous(),
-                              "attention_mask": batch[1][:,:batch_seq_length].contiguous(),
-                              "labels": batch[3]}
-                    if args.output_mode == "span_classification":
-                        inputs["spans"] = batch[4]
-                    if args.model_type != "distilbert":
-                        inputs["token_type_ids"] = (
-                            batch[2][:,:batch_seq_length].contiguous() if args.model_type 
-                                in ["bert", "xlnet", "albert"] else None
-                        )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-                else:
-                    inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
-                    if args.output_mode == "span_classification":
-                        inputs["spans"] = batch[4]
-                    if args.model_type != "distilbert":
-                        inputs["token_type_ids"] = (
-                            batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
-                        )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-
-                if i == 0 and args.jit:
-                    try:
-                        model = torch.jit.trace(model, tuple(inputs.values()), check_trace=False)
-                        print("---- With JIT enabled.")
-                    except (RuntimeError, TypeError) as e:
-                        print("---- With JIT disabled.")
-                        print("failed to use PyTorch jit mode due to: ", e)
-
-                tic = time.time()
-                outputs = model(**inputs)
-                toc = time.time()
-                p.step()
-                tmp_eval_loss, logits = outputs[:2]
-
-                eval_loss += tmp_eval_loss.mean().item()
-                # OOB
-                elapsed = toc - tic
-                if i >= args.num_warmup:
-                    total_sample += args.per_instance_eval_batch_size
-                    total_time += elapsed
-                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-
-                nb_eval_steps += 1
-                if preds is None:
-                    preds = logits.detach().cpu().numpy()
-                    out_label_ids = inputs["labels"].detach().cpu().numpy()
-                    ex_ids = [guids.detach().cpu().numpy()]
-                else:
-                    preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                    out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
-                    ex_ids.append(guids.detach().cpu().numpy())
-    elif not args.profile and args.device == "cuda":
-        for i, batch in enumerate(eval_dataloader):
-            if i == args.num_iter:
-                break
-            batch = [t.to(args.device) for t in batch]
-            # OOB
-            ## channels_last
-            if args.channels_last:
-                batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
-
-            batch = tuple(batch)
-            guids = batch[-1]
-
-            max_seq_length = batch[0].size(1)
-            if args.use_fixed_seq_length: # no dynamic sequence length
-                batch_seq_length = max_seq_length
-            else:
-                batch_seq_length = torch.max(batch[-2], 0)[0].item()
-
-            if batch_seq_length < max_seq_length:
-                inputs = {"input_ids": batch[0][:,:batch_seq_length].contiguous(),
-                          "attention_mask": batch[1][:,:batch_seq_length].contiguous(),
-                          "labels": batch[3]}
-                if args.output_mode == "span_classification":
-                    inputs["spans"] = batch[4]
-                if args.model_type != "distilbert":
-                    inputs["token_type_ids"] = (
-                        batch[2][:,:batch_seq_length].contiguous() if args.model_type 
-                            in ["bert", "xlnet", "albert"] else None
-                    )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-            else:
-                inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
-                if args.output_mode == "span_classification":
-                    inputs["spans"] = batch[4]
-                if args.model_type != "distilbert":
-                    inputs["token_type_ids"] = (
-                        batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
-                    )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-
-            if i == 0 and args.jit:
-                try:
-                    model = torch.jit.trace(model, tuple(inputs.values()), check_trace=False)
-                    print("---- With JIT enabled.")
-                except (RuntimeError, TypeError) as e:
-                    print("---- With JIT disabled.")
-                    print("failed to use PyTorch jit mode due to: ", e)
-
-            tic = time.time()
-            with torch.jit.fuser(fuser_mode):
-                outputs = model(**inputs)
-            torch.cuda.synchronize()
-            toc = time.time()
-            tmp_eval_loss, logits = outputs[:2]
-
-            eval_loss += tmp_eval_loss.mean().item()
-            # OOB
-            elapsed = toc - tic
-            if i >= args.num_warmup:
-                total_sample += args.per_instance_eval_batch_size
-                total_time += elapsed
-            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-
-            nb_eval_steps += 1
-            if preds is None:
-                preds = logits.detach().cpu().numpy()
-                out_label_ids = inputs["labels"].detach().cpu().numpy()
-                ex_ids = [guids.detach().cpu().numpy()]
-            else:
-                preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
-                ex_ids.append(guids.detach().cpu().numpy())
     else:
+        if args.device == "cuda":
+            context_func = torch.jit.fuser
+            fuser_mode = fuser_mode
+        else:
+            import contextlib
+            context_func = contextlib.nullcontext
+            fuser_mode = None
+
         for i, batch in enumerate(eval_dataloader):
             if i == args.num_iter:
                 break
             batch = [t.to(args.device) for t in batch]
             # OOB
             ## channels_last
-            if args.channels_last:
+            if args.channels_last and args.device != "xpu":
                 batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
 
             batch = tuple(batch)
             guids = batch[-1]
 
-            max_seq_length = batch[0].size(1)
-            if args.use_fixed_seq_length: # no dynamic sequence length
-                batch_seq_length = max_seq_length
-            else:
-                batch_seq_length = torch.max(batch[-2], 0)[0].item()
-
-            if batch_seq_length < max_seq_length:
-                inputs = {"input_ids": batch[0][:,:batch_seq_length].contiguous(),
-                          "attention_mask": batch[1][:,:batch_seq_length].contiguous(),
-                          "labels": batch[3]}
-                if args.output_mode == "span_classification":
-                    inputs["spans"] = batch[4]
-                if args.model_type != "distilbert":
-                    inputs["token_type_ids"] = (
-                        batch[2][:,:batch_seq_length].contiguous() if args.model_type 
-                            in ["bert", "xlnet", "albert"] else None
-                    )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-            else:
-                inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
-                if args.output_mode == "span_classification":
-                    inputs["spans"] = batch[4]
-                if args.model_type != "distilbert":
-                    inputs["token_type_ids"] = (
-                        batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
-                    )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
-
-            if i == 0 and args.jit:
-                try:
-                    model = torch.jit.trace(model, tuple(inputs.values()), check_trace=False)
-                    print("---- With JIT enabled.")
-                except (RuntimeError, TypeError) as e:
-                    print("---- With JIT disabled.")
-                    print("failed to use PyTorch jit mode due to: ", e)
+            inputs, model = process_batch(args, batch, i, model)
 
             tic = time.time()
-            outputs = model(**inputs)
-            if args.device == "xpu":
+            with context_func(fuser_mode):
+                outputs = model(**inputs)
+            if args.device == "cuda":
+                torch.cuda.synchronize()
+            elif args.device == "xpu":
                 torch.xpu.synchronize()
             toc = time.time()
             tmp_eval_loss, logits = outputs[:2]
@@ -2031,6 +1857,7 @@ def main():
     parser.add_argument('--num_iter', default=200, type=int, help='test iterations')
     parser.add_argument('--num_warmup', default=20, type=int, help='test warmup')
     parser.add_argument('--device', default='cpu', type=str, help='cpu, cuda or xpu')
+    parser.add_argument('--warmup_for_dynamicShape', action='store_true', default=False, help='warmup')
     args = parser.parse_args()
 
     if args.device == "xpu":
