@@ -856,7 +856,6 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     else:
         if args.device == "cuda":
             context_func = torch.jit.fuser
-            fuser_mode = fuser_mode
         else:
             import contextlib
             context_func = contextlib.nullcontext
