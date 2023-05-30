@@ -9,7 +9,8 @@ function main {
     set_environment
 
     # requirements
-    pip install onnxruntime==1.8.0 setuptools_rust
+    #pip install onnxruntime==1.8.0 setuptools_rust
+    pip install onnxruntime setuptools_rust
     pip uninstall transformers -y
     python setup.py develop || true
 
