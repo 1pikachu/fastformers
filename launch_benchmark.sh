@@ -59,10 +59,10 @@ function generate_core {
             OOB_EXEC_HEADER+=" -C $(echo ${device_array[i]} |awk -F ';' '{print $1}') "
         elif [ "${device}" == "cuda" ];then
             OOB_EXEC_HEADER=" CUDA_VISIBLE_DEVICES=${device_array[i]} "
-	    addtion_options+=" --nv_fuser "
+	          addtion_options+=" --nv_fuser "
         fi
         printf " ${OOB_EXEC_HEADER} \
-	    python3 examples/fastformers/run_superglue.py \
+	    python3 -u examples/fastformers/run_superglue.py \
 	    	--model_type bert \
 		--model_name_or_path student-4L-312 \
 		--task_name BoolQ --output_dir output_dir --do_eval \
