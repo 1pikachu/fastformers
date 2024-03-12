@@ -131,6 +131,28 @@ CLOUDFRONT_DISTRIB_PREFIX = "https://cdn.huggingface.co"
 def is_torch_available():
     return _torch_available
 
+def is_tensor(x):
+    """
+    Tests if `x` is a `torch.Tensor`, `tf.Tensor`, `jaxlib.xla_extension.DeviceArray` or `np.ndarray` in the order
+    defined by `infer_framework_from_repr`
+    """
+    # This gives us a smart order to test the frameworks with the corresponding tests.
+    framework_to_test_func = _get_frameworks_and_test_func(x)
+    for test_func in framework_to_test_func.values():
+        if test_func(x):
+            return True
+
+    # Tracers
+    if is_torch_fx_proxy(x):
+        return True
+
+    if is_flax_available():
+        from jax.core import Tracer
+
+        if isinstance(x, Tracer):
+            return True
+
+    return False
 
 def is_tf_available():
     return _tf_available
