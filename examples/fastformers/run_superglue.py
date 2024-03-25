@@ -639,8 +639,8 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
         eval_dataset = load_and_cache_examples(args, task_name, tokenizer, split=split)
         eval_answers = None
 
-    if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
-        os.makedirs(args.output_dir)
+    #if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
+    #    os.makedirs(args.output_dir)
 
     #if args.fp16:
     #    model.half()
@@ -926,12 +926,12 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
         # NB(AW): forcing evaluation on ReCoRD on test (no labels) will error
         result = compute_metrics(task_name, preds, out_label_ids, guids=ex_ids, answers=eval_answers)
         results.update(result)
-        output_eval_file = os.path.join(args.output_dir, prefix, "eval_results.txt")
-        with open(output_eval_file, "w") as writer:
-            logger.info(f"***** {split} results: {prefix} *****")
-            for key in sorted(result.keys()):
-                logger.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
+        #output_eval_file = os.path.join(args.output_dir, prefix, "eval_results.txt")
+        #with open(output_eval_file, "w") as writer:
+        #    logger.info(f"***** {split} results: {prefix} *****")
+        #    for key in sorted(result.keys()):
+        #        logger.info("  %s = %s", key, str(result[key]))
+        #        writer.write("%s = %s\n" % (key, str(result[key])))
 
     return results, preds, ex_ids
 
