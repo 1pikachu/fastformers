@@ -678,6 +678,10 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
     else:
         fuser_mode = "none"
     print("---- fuser mode:", fuser_mode)
+    ## compile
+    if args.compile:
+        print("----enable compiler")
+        model = torch.compile(model, backend=args.backend, options={"freezing": True})
 
     # eval_dataloader = tqdm(eval_dataloader, desc="Evaluating") if use_tqdm else eval_dataloader
     args.num_iter = min(args.num_iter+args.num_warmup, len(eval_dataloader))
@@ -1857,6 +1861,8 @@ def main():
     parser.add_argument('--num_warmup', default=20, type=int, help='test warmup')
     parser.add_argument('--device', default='cpu', type=str, help='cpu, cuda or xpu')
     parser.add_argument('--warmup_for_dynamicShape', action='store_true', default=False, help='warmup')
+    parser.add_argument('--compile', action='store_true', default=False, help='compile model')
+    parser.add_argument('--backend', default="inductor", type=str, help='backend')
     args = parser.parse_args()
 
     if args.device == "xpu":
