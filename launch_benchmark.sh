@@ -15,7 +15,8 @@ function main {
     python setup.py develop || true
 
     cp -r ${DATASET_DIR} .
-    ln -s ${CKPT_DIR} student-4L-312 
+    ln -s ${CKPT_DIR} student-4L-312
+    cp oob-common/context_func.py examples/fastformers/.
 
     # if multiple use 'xxx,xxx,xxx'
     model_name_list=($(echo "${model_name}" |sed 's/,/ /g'))

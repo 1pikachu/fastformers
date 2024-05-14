@@ -45,6 +45,12 @@ from multiprocessing import Process, Queue
 from tqdm import tqdm
 from torch.nn import MSELoss, CosineSimilarity
 
+try:
+    from .context_func import context_func
+except ModuleNotFoundError as e:
+    print("!!!pls check how to add context_func.py from launch_benchmark.sh")
+    sys.exit(0)
+
 from transformers import superglue_compute_metrics as compute_metrics
 from transformers import superglue_convert_examples_to_features as convert_examples_to_features
 from transformers import superglue_output_modes as output_modes
@@ -339,20 +345,6 @@ def train(args, train_dataset, model, tokenizer):
             break
 
     return global_step, tr_loss / global_step
-
-def trace_handler(p):
-    output = p.key_averages().table(sort_by="self_cpu_time_total")
-    print(output)
-    import pathlib
-    timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
-    if not os.path.exists(timeline_dir):
-        try:
-            os.makedirs(timeline_dir)
-        except:
-            pass
-    timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + \
-            '-' + str(p.step_num) + '-' + str(os.getpid()) + '.json'
-    p.export_chrome_trace(timeline_file)
 
 def distill(args, train_dataset, teacher_model, student_model, tokenizer):
     """ Train the model with distillation
@@ -746,166 +738,53 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
             elif args.device == "xpu":
                 torch.xpu.synchronize()
 
-    if args.profile and args.device == "xpu":
-        for i, batch in enumerate(eval_dataloader):
-            if i == args.num_iter:
-                break
-            batch = [t.to(args.device) for t in batch]
-            # OOB
-            ## channels_last
-            if args.channels_last:
-                batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
-
-            batch = tuple(batch)
-            guids = batch[-1]
-
-            inputs, model = process_batch(args, batch, i, model)
-
-            tic = time.time()
-            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
-                outputs = model(**inputs)
-            torch.xpu.synchronize()
-            toc = time.time()
-            tmp_eval_loss, logits = outputs[:2]
-
-            eval_loss += tmp_eval_loss.mean().item()
-            # OOB
-            elapsed = toc - tic
-            if i >= args.num_warmup:
-                total_sample += args.per_instance_eval_batch_size
-                total_time += elapsed
-            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-
-            if args.profile and i == profile_len:
-                import pathlib
-                timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
-                if not os.path.exists(timeline_dir):
-                    try:
-                        os.makedirs(timeline_dir)
-                    except:
-                        pass
-                torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
-                    timeline_dir+'profile.pt')
-                torch.save(prof.key_averages(group_by_input_shape=True).table(),
-                    timeline_dir+'profile_detail.pt')
-                torch.save(prof.table(sort_by="id", row_limit=100000),
-                    timeline_dir+'profile_detail_withId.pt')
-                prof.export_chrome_trace(timeline_dir+"trace.json")
-
-            nb_eval_steps += 1
-            if preds is None:
-                preds = logits.detach().cpu().numpy()
-                out_label_ids = inputs["labels"].detach().cpu().numpy()
-                ex_ids = [guids.detach().cpu().numpy()]
+    for i, batch in enumerate(eval_dataloader):
+        if i == args.num_iter:
+            break
+        # OOB
+        if args.fixInputShape:
+            if i == 0:
+                fixed_batch = batch
             else:
-                preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
-                ex_ids.append(guids.detach().cpu().numpy())
-    elif args.profile:
-        if args.device == "cpu":
-            profile_act = [torch.profiler.ProfilerActivity.CPU]
-        elif args.device == "cuda":
-            profile_act = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+                batch = fixed_batch
+        ## channels_last
+        if args.channels_last:
+            batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
 
-        with torch.profiler.profile(
-            activities=profile_act,
-            record_shapes=True,
-            schedule=torch.profiler.schedule(
-                wait=profile_len,
-                warmup=2,
-                active=1,
-            ),
-            on_trace_ready=trace_handler,
-        ) as p:
-            for i, batch in enumerate(eval_dataloader):
-                if i == args.num_iter:
-                    break
-                batch = [t.to(args.device) for t in batch]
-                # OOB
-                ## channels_last
-                if args.channels_last:
-                    batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
+        batch = tuple(batch)
+        guids = batch[-1]
 
-                batch = tuple(batch)
-                guids = batch[-1]
+        inputs, model = process_batch(args, batch, i, model)
 
-                inputs, model = process_batch(args, batch, i, model)
-
-                tic = time.time()
-                with torch.jit.fuser(fuser_mode):
-                    outputs = model(**inputs)
-                if args.device == "cuda":
-                    torch.cuda.synchronize()
-                toc = time.time()
-                p.step()
-                tmp_eval_loss, logits = outputs[:2]
-
-                eval_loss += tmp_eval_loss.mean().item()
-                # OOB
-                elapsed = toc - tic
-                if i >= args.num_warmup:
-                    total_sample += args.per_instance_eval_batch_size
-                    total_time += elapsed
-                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-
-                nb_eval_steps += 1
-                if preds is None:
-                    preds = logits.detach().cpu().numpy()
-                    out_label_ids = inputs["labels"].detach().cpu().numpy()
-                    ex_ids = [guids.detach().cpu().numpy()]
-                else:
-                    preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                    out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
-                    ex_ids.append(guids.detach().cpu().numpy())
-    else:
-        if args.device == "cuda":
-            context_func = torch.jit.fuser
-        else:
-            import contextlib
-            context_func = contextlib.nullcontext
-            fuser_mode = None
-
-        for i, batch in enumerate(eval_dataloader):
-            if i == args.num_iter:
-                break
+        tic = time.time()
+        with context_func(args.profile if i == profile_len else False, args.device, fuser_mode):
             batch = [t.to(args.device) for t in batch]
-            # OOB
-            ## channels_last
-            if args.channels_last and args.device != "xpu":
-                batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
-
-            batch = tuple(batch)
-            guids = batch[-1]
-
-            inputs, model = process_batch(args, batch, i, model)
-
-            tic = time.time()
-            with context_func(fuser_mode):
-                outputs = model(**inputs)
+            outputs = model(**inputs)
             if args.device == "cuda":
                 torch.cuda.synchronize()
             elif args.device == "xpu":
                 torch.xpu.synchronize()
-            toc = time.time()
-            tmp_eval_loss, logits = outputs[:2]
+        toc = time.time()
+        tmp_eval_loss, logits = outputs[:2]
 
-            eval_loss += tmp_eval_loss.mean().item()
-            # OOB
-            elapsed = toc - tic
-            if i >= args.num_warmup:
-                total_sample += args.per_instance_eval_batch_size
-                total_time += elapsed
-            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+        eval_loss += tmp_eval_loss.mean().item()
+        # OOB
+        elapsed = toc - tic
+        if i >= args.num_warmup:
+            total_sample += args.per_instance_eval_batch_size
+            total_time += elapsed
+        print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
 
-            nb_eval_steps += 1
-            if preds is None:
-                preds = logits.detach().cpu().numpy()
-                out_label_ids = inputs["labels"].detach().cpu().numpy()
-                ex_ids = [guids.detach().cpu().numpy()]
-            else:
-                preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
-                ex_ids.append(guids.detach().cpu().numpy())
+        nb_eval_steps += 1
+        if preds is None:
+            preds = logits.detach().cpu().numpy()
+            out_label_ids = inputs["labels"].detach().cpu().numpy()
+            ex_ids = [guids.detach().cpu().numpy()]
+        else:
+            preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
+            out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
+            ex_ids.append(guids.detach().cpu().numpy())
+
     # OOB
     if args.num_iter <= args.num_warmup:
         latency = 0
@@ -1863,6 +1742,7 @@ def main():
     parser.add_argument('--warmup_for_dynamicShape', action='store_true', default=False, help='warmup')
     parser.add_argument('--compile', action='store_true', default=False, help='compile model')
     parser.add_argument('--backend', default="inductor", type=str, help='backend')
+    parser.add_argument('--fixInputShape', action='store_true', default=False, help='fix input shape')
     args = parser.parse_args()
 
     if args.device == "xpu":
