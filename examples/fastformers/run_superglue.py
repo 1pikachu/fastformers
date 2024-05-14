@@ -46,7 +46,7 @@ from tqdm import tqdm
 from torch.nn import MSELoss, CosineSimilarity
 
 try:
-    from .context_func import context_func
+    from context_func import context_func
 except ModuleNotFoundError as e:
     print("!!!pls check how to add context_func.py from launch_benchmark.sh")
     sys.exit(0)
@@ -747,6 +747,7 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
                 fixed_batch = batch
             else:
                 batch = fixed_batch
+        batch = [t.to(args.device) for t in batch]
         ## channels_last
         if args.channels_last:
             batch =  [t.to(memory_format=torch.channels_last) if len(t.size()) == 4 else t for t in batch]
@@ -758,7 +759,6 @@ def evaluate(args, task_name, model, tokenizer, split="dev", prefix="", use_tqdm
 
         tic = time.time()
         with context_func(args.profile if i == profile_len else False, args.device, fuser_mode):
-            batch = [t.to(args.device) for t in batch]
             outputs = model(**inputs)
             if args.device == "cuda":
                 torch.cuda.synchronize()
