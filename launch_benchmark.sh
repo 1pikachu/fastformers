@@ -10,7 +10,7 @@ function main {
 
     # requirements
     #pip install onnxruntime==1.8.0 setuptools_rust
-    pip install onnxruntime setuptools_rust sacremoses sentencepiece scikit-learn
+    pip install onnxruntime setuptools_rust sacremoses sentencepiece scikit-learn protobuf==3.19.0
     pip uninstall transformers -y
     python setup.py develop || true
 
