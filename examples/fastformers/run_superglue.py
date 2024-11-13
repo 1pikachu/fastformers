@@ -1743,10 +1743,12 @@ def main():
     parser.add_argument('--compile', action='store_true', default=False, help='compile model')
     parser.add_argument('--backend', default="inductor", type=str, help='backend')
     parser.add_argument('--fixInputShape', action='store_true', default=False, help='fix input shape')
+    parser.add_argument('--ipex', action='store_true', default=False)
     args = parser.parse_args()
 
-    if args.device == "xpu":
+    if args.device == "xpu" and args.ipex:
         import intel_extension_for_pytorch
+        print("Use IPEX")
     elif args.device == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = False
 
@@ -2018,7 +2020,7 @@ def main():
         # normal evaluation (pytorch)
         else:
             if not args.skip_evaluate_dev:
-                if args.device == "xpu":
+                if args.device == "xpu" and args.ipex:
                     datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
                     model = torch.xpu.optimize(model=model, dtype=datatype)
                 with torch.no_grad():
