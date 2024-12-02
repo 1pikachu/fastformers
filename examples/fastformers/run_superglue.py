@@ -2024,21 +2024,14 @@ def main():
                     datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
                     model = torch.xpu.optimize(model=model, dtype=datatype)
                 with torch.no_grad():
-                    if args.precision == "float16" and args.device == "cuda":
-                        print("---- float16 cuda autocast")
-                        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
-                            result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                    elif args.precision == "float16" and args.device == "xpu":
-                        print("---- float16 xpu autocast")
-                        with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16):
-                            result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                    elif args.precision == "bfloat16" and args.device == "cpu":
-                        print("---- bfloat16 cpu autocast")
-                        with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
-                            result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
-                    elif args.precision == "bfloat16" and args.device == "xpu":
-                        print("---- bfloat16 xpu autocast")
-                        with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                    if args.precision == "float16":
+                        amp_dtype = torch.float16
+                    elif args.precision == "bfloat16":
+                        amp_dtype = torch.bfloat16
+
+                    print("---- {} {} autocast".format(args.precision, args.device))
+                    if args.precision != "float32":
+                        with torch.autocast(enabled=True, dtype=amp_dtype):
                             result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
                     else:
                         print("---- no autocast")
