@@ -2031,7 +2031,7 @@ def main():
 
                     print("---- {} {} autocast".format(args.precision, args.device))
                     if args.precision != "float32":
-                        with torch.autocast(enabled=True, dtype=amp_dtype):
+                        with torch.autocast(enabled=True, dtype=amp_dtype, device_type=args.device):
                             result, preds, ex_ids = evaluate(args, args.task_name, model, tokenizer, prefix="", use_tqdm=False)
                     else:
                         print("---- no autocast")
